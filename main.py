@@ -9,18 +9,19 @@ import shutil
 import hashlib
 import openai
 import datetime
-import requests
 from pathlib import Path
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ExifTags
-import magic
 import clamd
 import bcrypt
+from loguru import logger
 
-# Set up OpenAI API key from environment variable
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+# Setup logs
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+logger.add(LOG_DIR / "server.log", rotation="500 KB", retention="7 days", level="DEBUG")
 
 app = FastAPI()
 
@@ -40,11 +41,11 @@ USER_DB = Path("users.json")
 # Mount static
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-# Configuration
+# Config
 COOKIE_NAME = "visitor_id"
 SESSION_COOKIE = "session_id"
 SESSIONS = {}
-ALLOWED_MIME_TYPES = ["image/jpeg", "image/png"]
+ALLOWED_FORMATS = {"jpeg", "png"}
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 UPLOAD_COOLDOWN_SECONDS = 60
 BLACKLIST_DURATION_SECONDS = 30 * 24 * 60 * 60
@@ -60,9 +61,9 @@ admin_passcode = None
 if not USER_DB.exists():
     import secrets
     admin_passcode = ''.join(secrets.choice("0123456789") for _ in range(6))
-    print(f"[Admin Setup] Passcode: {admin_passcode}")
+    logger.info(f"[Admin Setup] Passcode: {admin_passcode}")
 
-# ---------- Helpers ----------
+# ---------- Utility Functions ----------
 def extract_exif(file_path):
     try:
         image = Image.open(file_path)
@@ -97,6 +98,14 @@ def calculate_sha256(file_path):
         for chunk in iter(lambda: f.read(4096), b""):
             hash_sha256.update(chunk)
     return hash_sha256.hexdigest()
+
+def is_valid_image_type(file_bytes):
+    from io import BytesIO
+    try:
+        img = Image.open(BytesIO(file_bytes))
+        return img.format.lower() in ALLOWED_FORMATS
+    except Exception:
+        return False
 
 def load_users():
     if USER_DB.exists():
@@ -146,8 +155,7 @@ def analyze_image(image_path):
     '''
     try:
         img_bytes = Path(image_path).read_bytes()
-        base64_img = base64.b64encode(img_bytes).decode("utf-8")
-
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
         prompt = (
             "You are an expert automotive image classifier."
             " Given a car photo, respond ONLY with JSON like this:\n"
@@ -158,13 +166,12 @@ def analyze_image(image_path):
             "  \"car_color\": \"Red\"\n"
             "}"
         )
-
         response = openai.chat.completions.create(
             model="gpt-4-vision-preview",
             messages=[
                 {"role": "user", "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                 ]}
             ],
             max_tokens=300
