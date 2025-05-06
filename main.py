@@ -181,3 +181,103 @@ def analyze_image(image_path):
             "car_model": None,
             "car_color": None
         }
+
+
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import RedirectResponse
+from starlette.status import HTTP_302_FOUND
+
+templates = Jinja2Templates(directory="templates")
+TEMPLATES_DIR = Path("templates")
+TEMPLATES_DIR.mkdir(exist_ok=True)
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    return templates.TemplateResponse("home.html", {"request": request})
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_dashboard(request: Request):
+    user = current_user(request)
+    if not user or find_user(user)["role"] != "admin":
+        raise HTTPException(status_code=403)
+    return templates.TemplateResponse("admin_dashboard.html", {"request": request, "user": user})
+
+@app.get("/admin/staging", response_class=HTMLResponse)
+def view_staging(request: Request):
+    user = current_user(request)
+    if not user or find_user(user)["role"] != "admin":
+        raise HTTPException(status_code=403)
+
+    staged_files = []
+    for file in STAGING_DIR.glob("*.jpg"):
+        meta = load_staging_metadata(file.name)
+        staged_files.append({
+            "filename": file.name,
+            "metadata": meta
+        })
+
+    return templates.TemplateResponse("staging_review.html", {
+        "request": request,
+        "files": staged_files,
+        "user": user
+    })
+
+@app.post("/admin/approve")
+async def approve_file(request: Request, filename: str = Form(...), note: str = Form("")):
+    user = current_user(request)
+    if not user or find_user(user)["role"] != "admin":
+        raise HTTPException(status_code=403)
+
+    src_path = STAGING_DIR / filename
+    meta = load_staging_metadata(filename)
+    hash_before = calculate_sha256(src_path)
+    dest_path = UPLOAD_DIR / filename
+    shutil.move(str(src_path), str(dest_path))
+
+    hash_after = calculate_sha256(dest_path)
+    if hash_before != hash_after:
+        logger.error(f"Hash mismatch on move for {filename}")
+        return RedirectResponse("/admin/staging", status_code=HTTP_302_FOUND)
+
+    strip_exif(dest_path)
+    create_thumbnail(dest_path, THUMBNAIL_DIR / filename)
+
+    with DECISIONS_LOG.open("a") as logf:
+        logf.write(json.dumps({
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "client_ip": meta.get("client_ip"),
+            "visitor_id": meta.get("visitor_id"),
+            "filename": filename,
+            "action": "approved",
+            "admin": user,
+            "sha256": hash_after,
+            "mod_note": note
+        }) + "\n")
+
+    return RedirectResponse("/admin/staging", status_code=HTTP_302_FOUND)
+
+@app.post("/admin/reject")
+async def reject_file(request: Request, filename: str = Form(...), note: str = Form("")):
+    user = current_user(request)
+    if not user or find_user(user)["role"] != "admin":
+        raise HTTPException(status_code=403)
+
+    src_path = STAGING_DIR / filename
+    meta = load_staging_metadata(filename)
+    hash_before = calculate_sha256(src_path)
+
+    src_path.unlink(missing_ok=True)
+
+    with DECISIONS_LOG.open("a") as logf:
+        logf.write(json.dumps({
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "client_ip": meta.get("client_ip"),
+            "visitor_id": meta.get("visitor_id"),
+            "filename": filename,
+            "action": "rejected",
+            "admin": user,
+            "sha256": hash_before,
+            "mod_note": note
+        }) + "\n")
+
+    return RedirectResponse("/admin/staging", status_code=HTTP_302_FOUND)
