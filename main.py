@@ -23,6 +23,10 @@ import io
 # Setup logs directory and logger
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
+
+LOG_META_DIR = LOG_DIR / "meta"
+LOG_META_DIR.mkdir(parents=True, exist_ok=True)
+
 logger.add(LOG_DIR / "server.log", rotation="500 KB", retention="7 days", level="DEBUG")
 
 app = FastAPI()
@@ -42,6 +46,7 @@ USER_DB = Path("users.json")
 
 # Mount static
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.mount("/staging", StaticFiles(directory=STAGING_DIR), name="staging")
 
 # Configuration
 COOKIE_NAME = "visitor_id"
@@ -258,7 +263,13 @@ async def reject_file(request: Request, filename: str = Form(...), note: str = F
     meta = load_staging_metadata(filename)
     hash_before = calculate_sha256(src_path)
 
+    # Delete the staged image file
     src_path.unlink(missing_ok=True)
+
+    # Move .meta.json to logs/meta/
+    meta_path = STAGING_DIR / f"{filename}.meta.json"
+    if meta_path.exists():
+        shutil.move(str(meta_path), str(LOG_META_DIR / f"{filename}.meta.json"))
 
     with DECISIONS_LOG.open("a") as logf:
         logf.write(json.dumps({

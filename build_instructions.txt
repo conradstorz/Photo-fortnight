@@ -1,0 +1,19 @@
+# 🚀 Build and Run Instructions
+
+1. Ensure your .env file contains:
+   OPENAI_API_KEY=sk-xxxxxx...
+
+2. Build the Docker image:
+   docker-compose build
+
+3. Start the container:
+   docker-compose up
+
+4. Visit the app at:
+   http://localhost:8000
+
+# 🧼 To stop the app:
+   docker-compose down
+
+# 🧼 To rebuild after changes:
+   docker-compose up --build

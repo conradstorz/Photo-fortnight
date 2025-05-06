@@ -1,8 +1,18 @@
 <!DOCTYPE html>
 <html>
-<head><title>Photo Upload Site</title></head>
+<head><title>Photo Upload Tracker</title></head>
 <body>
     <h1>Welcome to the Photo Upload Tracker</h1>
     <p>This site accepts uploads and allows admin moderation.</p>
+
+    {% if request.cookies.session_id %}
+        <p><a href="/upload">Upload a Photo</a></p>
+        {% if user and user.role == "admin" %}
+            <p><a href="/admin">Admin Dashboard</a></p>
+        {% endif %}
+        <p><a href="/logout">Logout</a></p>
+    {% else %}
+        <p><a href="/login">Login</a> or <a href="/register">Create Account</a></p>
+    {% endif %}
 </body>
 </html>
