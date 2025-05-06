@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><title>Staging Review</title></head>
+<body>
+    <h1>Pending Uploads for Review</h1>
+    <p><a href="/admin">Back to Admin Dashboard</a></p>
+    {% for f in files %}
+        <div style="margin-bottom: 20px;">
+            <p><strong>{{ f.filename }}</strong></p>
+            <p>IP: {{ f.metadata.client_ip }} | Visitor ID: {{ f.metadata.visitor_id }}</p>
+            <img src="/uploads/thumbnails/{{ f.filename }}" height="150"><br>
+            <form method="post" action="/admin/approve">
+                <input type="hidden" name="filename" value="{{ f.filename }}">
+                <input type="text" name="note" placeholder="Moderator note (optional)" size="40">
+                <button type="submit">Approve</button>
+            </form>
+            <form method="post" action="/admin/reject">
+                <input type="hidden" name="filename" value="{{ f.filename }}">
+                <input type="text" name="note" placeholder="Moderator note (optional)" size="40">
+                <button type="submit">Reject</button>
+            </form>
+        </div>
+    {% endfor %}
+</body>
+</html>

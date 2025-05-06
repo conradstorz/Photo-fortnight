@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><title>Register</title></head>
+<body>
+    <h1>Create Account</h1>
+    <form method="post" action="/register">
+        <label>Username: <input type="text" name="username"></label><br>
+        <label>Password: <input type="password" name="password"></label><br>
+        {% if admin_passcode_required %}
+        <label>Admin Passcode: <input type="text" name="admin_passcode"></label><br>
+        {% endif %}
+        <button type="submit">Register</button>
+    </form>
+    <p><a href="/login">Back to Login</a></p>
+</body>
+</html>

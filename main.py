@@ -141,14 +141,6 @@ def load_staging_metadata(filename):
     return {"client_ip": "unknown", "visitor_id": "unknown"}
 
 def analyze_image(image_path):
-    '''
-    Sends image to OpenAI Vision API and expects a JSON response.
-    Returns dict with:
-    - is_pornographic: bool
-    - car_make: str
-    - car_model: str
-    - car_color: str
-    '''
     try:
         img_bytes = Path(image_path).read_bytes()
         base64_img = base64.b64encode(img_bytes).decode("utf-8")
@@ -281,3 +273,92 @@ async def reject_file(request: Request, filename: str = Form(...), note: str = F
         }) + "\n")
 
     return RedirectResponse("/admin/staging", status_code=HTTP_302_FOUND)
+
+@app.get("/register", response_class=HTMLResponse)
+def register_form(request: Request):
+    return templates.TemplateResponse("register.html", {
+        "request": request,
+        "admin_passcode_required": not any_admin_exists()
+    })
+
+@app.post("/register")
+async def register(request: Request, username: str = Form(...), password: str = Form(...), admin_passcode: str = Form(None)):
+    users = load_users()
+    if find_user(username):
+        raise HTTPException(status_code=400, detail="User already exists")
+    role = "admin" if not any_admin_exists() and admin_passcode == admin_passcode else "user"
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    users.append({"username": username, "password_hash": password_hash, "role": role})
+    save_users(users)
+    session_id = create_session(username)
+    response = RedirectResponse("/", status_code=302)
+    response.set_cookie(SESSION_COOKIE, session_id, httponly=True)
+    return response
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.post("/login")
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    user = find_user(username)
+    if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+        raise HTTPException(status_code=403, detail="Invalid credentials")
+    session_id = create_session(username)
+    response = RedirectResponse("/", status_code=302)
+    response.set_cookie(SESSION_COOKIE, session_id, httponly=True)
+    return response
+
+@app.get("/logout")
+def logout(request: Request):
+    sid = request.cookies.get(SESSION_COOKIE)
+    SESSIONS.pop(sid, None)
+    response = RedirectResponse("/", status_code=302)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+@app.get("/upload", response_class=HTMLResponse)
+def upload_form(request: Request):
+    return templates.TemplateResponse("upload.html", {"request": request})
+
+@app.post("/upload")
+async def upload(request: Request, file: UploadFile = File(...)):
+    client_ip = request.client.host
+    visitor_id = request.cookies.get(COOKIE_NAME, str(uuid.uuid4()))
+    now = time.time()
+
+    if client_ip in blacklisted_ips and blacklisted_ips[client_ip] > now:
+        raise HTTPException(status_code=403, detail="You are blacklisted")
+
+    last_time = last_upload_times.get(client_ip, 0)
+    if now - last_time < UPLOAD_COOLDOWN_SECONDS:
+        raise HTTPException(status_code=429, detail="Please wait before uploading again")
+
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE or not is_valid_image_type(contents):
+        raise HTTPException(status_code=400, detail="Invalid file")
+
+    temp_path = STAGING_DIR / file.filename
+    temp_path.write_bytes(contents)
+
+    # Virus scan
+    try:
+        if clamd_client.ping():
+            result = clamd_client.instream(temp_path.open("rb"))
+            if result and result["stream"][0] == "FOUND":
+                temp_path.unlink()
+                raise HTTPException(status_code=400, detail="Virus detected")
+    except Exception as e:
+        logger.warning("ClamAV scan failed: {}", e)
+
+    # AI analysis
+    analysis = analyze_image(temp_path)
+    if analysis["is_pornographic"]:
+        blacklisted_ips[client_ip] = now + BLACKLIST_DURATION_SECONDS
+        temp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Inappropriate content")
+
+    save_staging_metadata(file.filename, client_ip, visitor_id)
+    last_upload_times[client_ip] = now
+
+    return RedirectResponse("/", status_code=302)
