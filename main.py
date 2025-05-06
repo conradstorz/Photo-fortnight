@@ -9,16 +9,18 @@ import shutil
 import hashlib
 import openai
 import datetime
+import secrets
 from pathlib import Path
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ExifTags
+from loguru import logger
 import clamd
 import bcrypt
-from loguru import logger
+import io
 
-# Setup logs
+# Setup logs directory and logger
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 logger.add(LOG_DIR / "server.log", rotation="500 KB", retention="7 days", level="DEBUG")
@@ -41,7 +43,7 @@ USER_DB = Path("users.json")
 # Mount static
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-# Config
+# Configuration
 COOKIE_NAME = "visitor_id"
 SESSION_COOKIE = "session_id"
 SESSIONS = {}
@@ -59,18 +61,15 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 # Admin passcode
 admin_passcode = None
 if not USER_DB.exists():
-    import secrets
     admin_passcode = ''.join(secrets.choice("0123456789") for _ in range(6))
     logger.info(f"[Admin Setup] Passcode: {admin_passcode}")
 
-# ---------- Utility Functions ----------
+# ----------- Utilities -----------
 def extract_exif(file_path):
     try:
         image = Image.open(file_path)
         exif_data = image._getexif()
-        if not exif_data:
-            return {}
-        return {ExifTags.TAGS.get(tag, tag): value for tag, value in exif_data.items()}
+        return {ExifTags.TAGS.get(k, k): v for k, v in exif_data.items()} if exif_data else {}
     except Exception:
         return {}
 
@@ -93,24 +92,21 @@ def create_thumbnail(image_path, thumbnail_path, size=(300, 300)):
         pass
 
 def calculate_sha256(file_path):
-    hash_sha256 = hashlib.sha256()
+    h = hashlib.sha256()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
-            hash_sha256.update(chunk)
-    return hash_sha256.hexdigest()
+            h.update(chunk)
+    return h.hexdigest()
 
 def is_valid_image_type(file_bytes):
-    from io import BytesIO
     try:
-        img = Image.open(BytesIO(file_bytes))
+        img = Image.open(io.BytesIO(file_bytes))
         return img.format.lower() in ALLOWED_FORMATS
     except Exception:
         return False
 
 def load_users():
-    if USER_DB.exists():
-        return json.loads(USER_DB.read_text())
-    return []
+    return json.loads(USER_DB.read_text()) if USER_DB.exists() else []
 
 def save_users(users):
     USER_DB.write_text(json.dumps(users, indent=2))
@@ -139,9 +135,9 @@ def save_staging_metadata(filename, client_ip, visitor_id):
     (STAGING_DIR / f"{filename}.meta.json").write_text(json.dumps(meta))
 
 def load_staging_metadata(filename):
-    path = STAGING_DIR / f"{filename}.meta.json"
-    if path.exists():
-        return json.loads(path.read_text())
+    meta_path = STAGING_DIR / f"{filename}.meta.json"
+    if meta_path.exists():
+        return json.loads(meta_path.read_text())
     return {"client_ip": "unknown", "visitor_id": "unknown"}
 
 def analyze_image(image_path):
@@ -155,7 +151,7 @@ def analyze_image(image_path):
     '''
     try:
         img_bytes = Path(image_path).read_bytes()
-        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        base64_img = base64.b64encode(img_bytes).decode("utf-8")
         prompt = (
             "You are an expert automotive image classifier."
             " Given a car photo, respond ONLY with JSON like this:\n"
@@ -171,21 +167,17 @@ def analyze_image(image_path):
             messages=[
                 {"role": "user", "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
                 ]}
             ],
             max_tokens=300
         )
-
-        raw = response.choices[0].message.content.strip()
-        parsed = json.loads(raw)
-        return parsed
-
+        return json.loads(response.choices[0].message.content.strip())
     except Exception as e:
-        print("[analyze_image] Error:", e)
+        logger.exception("[AI ERROR] Failed to analyze image")
         return {
             "is_pornographic": False,
             "car_make": None,
             "car_model": None,
-            "car_color": None,
+            "car_color": None
         }
